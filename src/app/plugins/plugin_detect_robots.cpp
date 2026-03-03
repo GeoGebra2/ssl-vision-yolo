@@ -49,6 +49,8 @@ PluginDetectRobots::PluginDetectRobots(FrameBuffer * _buffer, LUT3D * lut, const
   team_detector_yellow=new CMPattern::TeamDetector(_lut,camera_params,field);
 
   _settings=new VarList("Robot Detection");
+  _settings->addChild(_use_yolo_candidates = new VarBool("Use YOLO Candidates", false));
+  _settings->addChild(_yolo_expand_pixels = new VarInt("YOLO Gate Expand (px)", 5));
   _notifier.addRecursive(_settings);
   connect(_global_team_selector_blue,SIGNAL(signalTeamDataChanged()),&_notifier,SLOT(changeSlotOtherChange()));
   connect(_global_team_selector_yellow,SIGNAL(signalTeamDataChanged()),&_notifier,SLOT(changeSlotOtherChange()));
@@ -143,6 +145,44 @@ ProcessResult PluginDetectRobots::process(FrameData * data, RenderOptions * opti
       }
 
       detector->update(robotlist, color_id,  num_robots, image, colorlist, reg_tree);
+      if (_use_yolo_candidates->getBool()) {
+        Yolo::CandidateSet* cset = (Yolo::CandidateSet*)data->map.get("yolo_candidates");
+        if (cset != 0) {
+          int expand = _yolo_expand_pixels->getInt();
+          int size = robotlist->size();
+          int tgt = 0;
+          const std::vector<Yolo::Candidate>* team_cands = 0;
+          if (team_i == 0) {
+            team_cands = &(cset->robots_blue);
+          } else {
+            team_cands = &(cset->robots_yellow);
+          }
+          for (int i = 0; i < size; i++) {
+            const SSL_DetectionRobot& r = robotlist->Get(i);
+            int px = r.pixel_x();
+            int py = r.pixel_y();
+            bool keep = false;
+            for (size_t k = 0; k < team_cands->size(); k++) {
+              const Yolo::Candidate& c = (*team_cands)[k];
+              if (px >= c.x1 - expand && px <= c.x2 + expand && py >= c.y1 - expand && py <= c.y2 + expand) {
+                keep = true;
+                break;
+              }
+            }
+            if (keep) {
+              if (tgt != i) {
+                (*(robotlist->Mutable(tgt))) = r;
+              }
+              tgt++;
+            }
+          }
+          int cur = robotlist->size();
+          while (cur > tgt) {
+            robotlist->RemoveLast();
+            cur--;
+          }
+        }
+      }
     } else {
       _notifier.changeSlotOtherChange();
     }
@@ -153,4 +193,3 @@ ProcessResult PluginDetectRobots::process(FrameData * data, RenderOptions * opti
   return ProcessingOk;
 
 }
-

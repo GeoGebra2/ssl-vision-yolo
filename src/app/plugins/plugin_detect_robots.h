@@ -32,6 +32,7 @@
 #include "vis_util.h"
 #include "lut3d.h"
 #include "VarNotifier.h"
+#include "yolo_candidates.h"
 /**
 	@author Author Name
 */
@@ -41,6 +42,8 @@ protected:
   VarNotifier _notifier;
   LUT3D * _lut;
   VarList * _settings;
+  VarBool * _use_yolo_candidates;
+  VarInt * _yolo_expand_pixels;
 
   VarString * _color_label;
   //TeamDetector * 

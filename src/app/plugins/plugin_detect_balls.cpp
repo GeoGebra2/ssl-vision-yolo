@@ -20,6 +20,7 @@
 //========================================================================
 #include <list>
 #include "plugin_detect_balls.h"
+#include "yolo_candidates.h"
 
 PluginDetectBalls::PluginDetectBalls ( FrameBuffer * _buffer, LUT3D * lut, const CameraParameters& camera_params, const RoboCupField& field,PluginDetectBallsSettings * settings )
     : VisionPlugin ( _buffer ), camera_parameters ( camera_params ), field ( field ) {
@@ -298,9 +299,39 @@ ProcessResult PluginDetectBalls::process ( FrameData * data, RenderOptions * opt
       ball->set_pixel_y ( it->reg->cen_y );
     }
 
+    if (_settings->_yolo_gate_enable->getBool()) {
+      Yolo::CandidateSet* cset = (Yolo::CandidateSet*)data->map.get("yolo_candidates");
+      if (cset != 0) {
+        int expand = _settings->_yolo_gate_expand_px->getInt();
+        int size = detection_frame->balls_size();
+        int tgt = 0;
+        for (int i = 0; i < size; i++) {
+          const SSL_DetectionBall& b = detection_frame->balls(i);
+          int px = (int)b.pixel_x();
+          int py = (int)b.pixel_y();
+          bool keep = false;
+          for (size_t k = 0; k < cset->balls.size(); k++) {
+            const Yolo::Candidate& c = cset->balls[k];
+            if (px >= c.x1 - expand && px <= c.x2 + expand && py >= c.y1 - expand && py <= c.y2 + expand) {
+              keep = true;
+              break;
+            }
+          }
+          if (keep) {
+            if (tgt != i) {
+              (*(detection_frame->mutable_balls()->Mutable(tgt))) = detection_frame->balls(i);
+            }
+            tgt++;
+          }
+        }
+        while (detection_frame->balls_size() > tgt) {
+          detection_frame->mutable_balls()->RemoveLast();
+        }
+      }
+    }
+
   }
 
   return ProcessingOk;
 
 }
-

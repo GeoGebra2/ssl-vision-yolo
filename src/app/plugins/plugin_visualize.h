@@ -30,6 +30,7 @@
 #include "field.h"
 #include "plugin_mask.h"
 #include "convex_hull_image_mask.h"
+#include "yolo_candidates.h"
 
 /**
 	@author Stefan Zickler
@@ -69,6 +70,7 @@ protected:
   VarBool * _v_detected_edges;
   VarBool * _v_mask_hull;
   VarBool * _v_chessboard;
+  VarBool * _v_yolo_candidates;
 
   const CameraParameters& camera_parameters;
   const RoboCupField& real_field;
@@ -113,6 +115,7 @@ protected:
   void DrawSearchCorridors(FrameData* data, VisualizationFrame* vis_frame);
 
   void DrawMaskHull(FrameData* data, VisualizationFrame* vis_frame);
+  void DrawYoloCandidates(FrameData* data, VisualizationFrame* vis_frame);
 
   static void DrawChessboard(FrameData* data, VisualizationFrame* vis_frame);
   static void DrawChessboardCalibrationPoints(FrameData* data, VisualizationFrame* vis_frame);

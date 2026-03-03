@@ -1,0 +1,40 @@
+ #pragma once
+ #include "visionplugin.h"
+ #include "yolo_candidates.h"
+ #include "VarTypes.h"
+ 
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/dnn.hpp>
+
+ class PluginDetectYoloCandidates : public VisionPlugin {
+ protected:
+   VarList* _settings;
+   VarBool* _enabled;
+   VarBool* _mock;
+   VarInt* _max_mock;
+  VarBool* _use_dnn;
+  VarString* _model_path;
+  VarInt* _input_w;
+  VarInt* _input_h;
+  VarBool* _swap_rb;
+  VarDouble* _conf_th;
+  VarDouble* _iou_th;
+  VarString* _robot_class_ids;
+  VarString* _ball_class_ids;
+  VarString* _robot_blue_class_ids;
+  VarString* _robot_yellow_class_ids;
+
+  cv::dnn::Net _net;
+  bool _net_loaded = false;
+  std::string _loaded_model_path;
+  static void letterbox(const cv::Mat& src, cv::Mat& dst, int new_w, int new_h, float& r, int& dw, int& dh);
+  static void parseClassIdList(const std::string& s, std::vector<int>& out);
+  static bool toBGRMat(const RawImage& src, cv::Mat& bgr);
+ public:
+   PluginDetectYoloCandidates(FrameBuffer* buffer);
+   ~PluginDetectYoloCandidates() override;
+   ProcessResult process(FrameData* data, RenderOptions* options) override;
+   VarList* getSettings() override;
+   std::string getName() override;
+ };

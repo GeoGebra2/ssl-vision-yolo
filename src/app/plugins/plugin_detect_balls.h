@@ -68,6 +68,9 @@ protected:
     VarBool   * _ball_on_field_filter;
     VarDouble * _ball_on_field_filter_threshold;
     VarBool   * _ball_in_goal_filter;
+  VarList   * _yolo_gate;
+    VarBool   * _yolo_gate_enable;
+    VarInt    * _yolo_gate_expand_px;
 
 public:
   PluginDetectBallsSettings() {
@@ -106,6 +109,10 @@ public:
     _filter_geometry->addChild(_ball_on_field_filter = new VarBool("Ball-In-Field Filter",true));
     _filter_geometry->addChild(_ball_on_field_filter_threshold = new VarDouble("Ball-In-Field Extra Space (mm)",300.0));
     _filter_geometry->addChild(_ball_in_goal_filter = new VarBool("Ball-In-Goal Filter",false));
+  
+  _settings->addChild(_yolo_gate = new VarList("YOLO Gate"));
+    _yolo_gate->addChild(_yolo_gate_enable = new VarBool("Enable", false));
+    _yolo_gate->addChild(_yolo_gate_expand_px = new VarInt("Gate Expand (px)", 5));
 
   }
   VarList * getSettings() {

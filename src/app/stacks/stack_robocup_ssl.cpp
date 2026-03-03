@@ -20,6 +20,7 @@
 //========================================================================
 #include "stack_robocup_ssl.h"
 #include <plugin_camera_intrinsic_calib.h>
+#include "plugin_detect_yolo_candidates.h"
 
 StackRoboCupSSL::StackRoboCupSSL(
     RenderOptions * _opts,
@@ -78,6 +79,8 @@ StackRoboCupSSL::StackRoboCupSSL(
 
   stack.push_back(new PluginFindBlobs(_fb,lut_yuv));
 
+  stack.push_back(new PluginDetectYoloCandidates(_fb));
+
   stack.push_back(new PluginDetectRobots(_fb,lut_yuv,*camera_parameters,*global_field,global_team_selector_blue,global_team_selector_yellow, global_team_settings));
 
   stack.push_back(new PluginDetectBalls(_fb,lut_yuv,*camera_parameters,*global_field,global_ball_settings));
@@ -110,4 +113,3 @@ StackRoboCupSSL::~StackRoboCupSSL() {
   delete lut_yuv;
   delete camera_parameters;
 }
-
