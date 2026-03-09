@@ -66,7 +66,7 @@ using namespace VarTypes;
     const std::string modelPath = _model_path->getString();
     if (!_net_loaded || _loaded_model_path != modelPath) {
       try {
-        _net = cv::dnn::readNet(modelPath);
+        _net = cv::dnn::readNetFromONNX(modelPath);
         _net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
         _net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
         _net_loaded = true;
