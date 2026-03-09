@@ -1,5 +1,15 @@
 #include "plugin_detect_yolo_candidates.h"
 #include <cstdio>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <iomanip>
+#include <QByteArray>
+#include <QBuffer>
+#include <QImage>
+#include <QDateTime>
+#include <QString>
+#include <QCoreApplication>
 using namespace VarTypes;
  
  PluginDetectYoloCandidates::PluginDetectYoloCandidates(FrameBuffer* buffer)
@@ -21,6 +31,14 @@ using namespace VarTypes;
   _settings->addChild(_robot_yellow_class_ids = new VarString("Robot Yellow Class IDs (csv)", "2"));
   _settings->addChild(_debug_print = new VarBool("Debug Print", false));
   _settings->addChild(_debug_net = new VarBool("Debug Net Verbose", false));
+  _settings->addChild(_use_python = new VarBool("Use Python Backend", false));
+  _settings->addChild(_py_command = new VarString("Python Command", "python"));
+  _settings->addChild(_py_script = new VarString("Python Script", "d:/ssl-vision-yolo/RoboCupVision/TestYOLOModel.py"));
+  _settings->addChild(_py_args = new VarString("Python Args", "--stdio"));
+  _settings->addChild(_py_timeout_ms = new VarInt("Python Timeout ms", 200));
+  _settings->addChild(_py_use_jpeg = new VarBool("Send JPEG", true));
+  _settings->addChild(_py_jpeg_quality = new VarInt("JPEG Quality", 80));
+  _py = new PythonYoloClient();
  }
  
  PluginDetectYoloCandidates::~PluginDetectYoloCandidates() {
@@ -41,6 +59,14 @@ using namespace VarTypes;
   delete _robot_yellow_class_ids;
   delete _debug_print;
   delete _debug_net;
+  delete _use_python;
+  delete _py_command;
+  delete _py_script;
+  delete _py_args;
+  delete _py_timeout_ms;
+  delete _py_use_jpeg;
+  delete _py_jpeg_quality;
+  if (_py) { _py->stop(); delete _py; _py = nullptr; }
  }
  
  ProcessResult PluginDetectYoloCandidates::process(FrameData* data, RenderOptions* options) {
@@ -61,6 +87,115 @@ using namespace VarTypes;
      return ProcessingOk;
    }
  
+#ifdef HAVE_OPENCV_DNN
+  if (_use_python->getBool()) {
+    // ensure process started
+    if (_py && !_py->isRunning()) {
+      _py->start(_py_command->getString(), _py_script->getString(), _py_args->getString());
+    }
+    if (_py && _py->isRunning()) {
+      cv::Mat bgr;
+      if (!toBGRMat(data->video, bgr)) {
+        return ProcessingFailed;
+      }
+      std::string payload;
+      if (_py_use_jpeg->getBool()) {
+        std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, _py_jpeg_quality->getInt() };
+        std::vector<uchar> buf;
+        cv::imencode(".jpg", bgr, buf, params);
+        QByteArray qbytes((const char*)buf.data(), (int)buf.size());
+        QByteArray b64 = qbytes.toBase64();
+        payload.assign(b64.constData(), (size_t)b64.size());
+      } else {
+        // raw BGR base64
+        QByteArray qbytes((const char*)bgr.data, bgr.cols * bgr.rows * 3);
+        QByteArray b64 = qbytes.toBase64();
+        payload.assign(b64.constData(), (size_t)b64.size());
+      }
+      std::ostringstream oss;
+      oss << "{";
+      oss << "\"width\":" << bgr.cols << ",\"height\":" << bgr.rows;
+      oss << ",\"format\":\"BGR\",\"jpeg\":" << (_py_use_jpeg->getBool() ? "true" : "false");
+      oss << ",\"conf\":" << _conf_th->getDouble() << ",\"iou\":" << _iou_th->getDouble();
+      oss << ",\"image_b64\":\"" << payload << "\"";
+      oss << "}";
+      std::string reply;
+      if (_py->requestLine(oss.str(), reply, _py_timeout_ms->getInt())) {
+        // parse detections: support JSON array [{x1,...}] or CSV lines
+        auto trim = [](std::string s)->std::string {
+          size_t a = s.find_first_not_of(" \r\n\t");
+          size_t b = s.find_last_not_of(" \r\n\t");
+          if (a==std::string::npos) return std::string();
+          return s.substr(a, b-a+1);
+        };
+        std::string r = trim(reply);
+        if (!r.empty() && r[0] == '[') {
+          // naive JSON array parse
+          size_t pos = 0;
+          while (true) {
+            size_t p1 = r.find('{', pos);
+            if (p1 == std::string::npos) break;
+            size_t p2 = r.find('}', p1);
+            if (p2 == std::string::npos) break;
+            std::string obj = r.substr(p1+1, p2-p1-1);
+            int x1=0,y1=0,x2=0,y2=0,cls=0; double conf=0.0;
+            auto getVal = [&](const char* key)->std::string {
+              std::string k = std::string(key);
+              size_t kpos = obj.find(k);
+              if (kpos==std::string::npos) return std::string();
+              size_t colon = obj.find(':', kpos);
+              if (colon==std::string::npos) return std::string();
+              size_t comma = obj.find(',', colon+1);
+              std::string val = obj.substr(colon+1, (comma==std::string::npos? obj.size(): comma) - (colon+1));
+              return trim(val);
+            };
+            try {
+              x1 = std::stoi(getVal("x1"));
+              y1 = std::stoi(getVal("y1"));
+              x2 = std::stoi(getVal("x2"));
+              y2 = std::stoi(getVal("y2"));
+              cls = std::stoi(getVal("class_id"));
+              conf = std::stod(getVal("conf"));
+              Yolo::Candidate cand;
+              cand.x1 = x1; cand.y1 = y1; cand.x2 = x2; cand.y2 = y2; cand.conf = (float)conf; cand.class_id = cls;
+              cset->robots.push_back(cand);
+            } catch (...) {}
+            pos = p2+1;
+          }
+        } else {
+          // CSV per line: x1,y1,x2,y2,conf,class_id
+          std::istringstream iss(r);
+          std::string line;
+          while (std::getline(iss, line)) {
+            line = trim(line);
+            if (line.empty()) continue;
+            std::istringstream ls(line);
+            std::string tok;
+            std::vector<std::string> toks;
+            while (std::getline(ls, tok, ',')) toks.push_back(trim(tok));
+            if (toks.size() >= 6) {
+              try {
+                int x1 = std::stoi(toks[0]);
+                int y1 = std::stoi(toks[1]);
+                int x2 = std::stoi(toks[2]);
+                int y2 = std::stoi(toks[3]);
+                double conf = std::stod(toks[4]);
+                int cls = std::stoi(toks[5]);
+                Yolo::Candidate cand;
+                cand.x1 = x1; cand.y1 = y1; cand.x2 = x2; cand.y2 = y2; cand.conf = (float)conf; cand.class_id = cls;
+                cset->robots.push_back(cand);
+              } catch (...) {}
+            }
+          }
+        }
+      } else {
+        // timeout or failure
+      }
+      return ProcessingOk;
+    }
+  }
+#endif
+
 #ifdef HAVE_OPENCV_DNN
   if (_use_dnn->getBool()) {
     const std::string modelPath = _model_path->getString();

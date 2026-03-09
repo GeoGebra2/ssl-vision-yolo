@@ -2,6 +2,7 @@
  #include "visionplugin.h"
  #include "yolo_candidates.h"
  #include "VarTypes.h"
+#include "python_yolo_client.h"
  
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -26,6 +27,13 @@
   VarString* _robot_yellow_class_ids;
   VarBool* _debug_print;
   VarBool* _debug_net;
+  VarBool* _use_python;
+  VarString* _py_command;
+  VarString* _py_script;
+  VarString* _py_args;
+  VarInt* _py_timeout_ms;
+  VarBool* _py_use_jpeg;
+  VarInt* _py_jpeg_quality;
 
   cv::dnn::Net _net;
   bool _net_loaded = false;
@@ -33,6 +41,7 @@
   static void letterbox(const cv::Mat& src, cv::Mat& dst, int new_w, int new_h, float& r, int& dw, int& dh);
   static void parseClassIdList(const std::string& s, std::vector<int>& out);
   static bool toBGRMat(const RawImage& src, cv::Mat& bgr);
+  PythonYoloClient* _py;
  public:
    PluginDetectYoloCandidates(FrameBuffer* buffer);
    ~PluginDetectYoloCandidates() override;
