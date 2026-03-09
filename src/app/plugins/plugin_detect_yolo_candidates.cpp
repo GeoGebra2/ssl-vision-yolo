@@ -1,6 +1,6 @@
- #include "plugin_detect_yolo_candidates.h"
- 
- using namespace VarTypes;
+#include "plugin_detect_yolo_candidates.h"
+#include <cstdio>
+using namespace VarTypes;
  
  PluginDetectYoloCandidates::PluginDetectYoloCandidates(FrameBuffer* buffer)
      : VisionPlugin(buffer) {
@@ -19,6 +19,7 @@
   _settings->addChild(_ball_class_ids = new VarString("Ball Class IDs (csv)", "0"));
   _settings->addChild(_robot_blue_class_ids = new VarString("Robot Blue Class IDs (csv)", "1"));
   _settings->addChild(_robot_yellow_class_ids = new VarString("Robot Yellow Class IDs (csv)", "2"));
+  _settings->addChild(_debug_print = new VarBool("Debug Print", false));
  }
  
  PluginDetectYoloCandidates::~PluginDetectYoloCandidates() {
@@ -37,6 +38,7 @@
   delete _ball_class_ids;
   delete _robot_blue_class_ids;
   delete _robot_yellow_class_ids;
+  delete _debug_print;
  }
  
  ProcessResult PluginDetectYoloCandidates::process(FrameData* data, RenderOptions* options) {
@@ -187,6 +189,25 @@
         }
       }
 
+      if (_debug_print && _debug_print->getBool()) {
+        std::printf("YOLO: balls=%zu blue=%zu yellow=%zu\n",
+                    cset->balls.size(), cset->robots_blue.size(), cset->robots_yellow.size());
+        for (size_t i = 0; i < cset->balls.size(); ++i) {
+          const auto &c = cset->balls[i];
+          std::printf("ball #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                      i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+        }
+        for (size_t i = 0; i < cset->robots_blue.size(); ++i) {
+          const auto &c = cset->robots_blue[i];
+          std::printf("robot_blue #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                      i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+        }
+        for (size_t i = 0; i < cset->robots_yellow.size(); ++i) {
+          const auto &c = cset->robots_yellow[i];
+          std::printf("robot_yellow #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                      i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+        }
+      }
       return ProcessingOk;
     }
   }
@@ -216,6 +237,25 @@
       }
      }
    }
+  if (_debug_print && _debug_print->getBool()) {
+    std::printf("YOLO: balls=%zu blue=%zu yellow=%zu\n",
+                cset->balls.size(), cset->robots_blue.size(), cset->robots_yellow.size());
+    for (size_t i = 0; i < cset->balls.size(); ++i) {
+      const auto &c = cset->balls[i];
+      std::printf("ball #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                  i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+    }
+    for (size_t i = 0; i < cset->robots_blue.size(); ++i) {
+      const auto &c = cset->robots_blue[i];
+      std::printf("robot_blue #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                  i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+    }
+    for (size_t i = 0; i < cset->robots_yellow.size(); ++i) {
+      const auto &c = cset->robots_yellow[i];
+      std::printf("robot_yellow #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                  i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+    }
+  }
  
    return ProcessingOk;
  }
