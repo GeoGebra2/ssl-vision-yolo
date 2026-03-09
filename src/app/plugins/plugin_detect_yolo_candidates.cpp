@@ -139,6 +139,15 @@ using namespace VarTypes;
           return s.substr(a, b-a+1);
         };
         std::string r = trim(reply);
+        std::vector<int> robot_ids, ball_ids, blue_ids, yellow_ids;
+        parseClassIdList(_robot_class_ids->getString(), robot_ids);
+        parseClassIdList(_ball_class_ids->getString(), ball_ids);
+        parseClassIdList(_robot_blue_class_ids->getString(), blue_ids);
+        parseClassIdList(_robot_yellow_class_ids->getString(), yellow_ids);
+        auto isIn = [](int id, const std::vector<int>& arr)->bool {
+          for (int v : arr) if (v == id) return true;
+          return false;
+        };
         if (!r.empty() && r[0] == '[') {
           // naive JSON array parse
           size_t pos = 0;
@@ -168,7 +177,11 @@ using namespace VarTypes;
               conf = std::stod(getVal("conf"));
               Yolo::Candidate cand;
               cand.x1 = x1; cand.y1 = y1; cand.x2 = x2; cand.y2 = y2; cand.conf = (float)conf; cand.class_id = cls;
-              cset->robots.push_back(cand);
+              bool is_robot = isIn(cand.class_id, robot_ids) || isIn(cand.class_id, blue_ids) || isIn(cand.class_id, yellow_ids);
+              if (is_robot) cset->robots.push_back(cand);
+              if (isIn(cand.class_id, blue_ids)) cset->robots_blue.push_back(cand);
+              if (isIn(cand.class_id, yellow_ids)) cset->robots_yellow.push_back(cand);
+              if (isIn(cand.class_id, ball_ids)) cset->balls.push_back(cand);
             } catch (...) {}
             pos = p2+1;
           }
@@ -193,9 +206,32 @@ using namespace VarTypes;
                 int cls = std::stoi(toks[5]);
                 Yolo::Candidate cand;
                 cand.x1 = x1; cand.y1 = y1; cand.x2 = x2; cand.y2 = y2; cand.conf = (float)conf; cand.class_id = cls;
-                cset->robots.push_back(cand);
+                bool is_robot = isIn(cand.class_id, robot_ids) || isIn(cand.class_id, blue_ids) || isIn(cand.class_id, yellow_ids);
+                if (is_robot) cset->robots.push_back(cand);
+                if (isIn(cand.class_id, blue_ids)) cset->robots_blue.push_back(cand);
+                if (isIn(cand.class_id, yellow_ids)) cset->robots_yellow.push_back(cand);
+                if (isIn(cand.class_id, ball_ids)) cset->balls.push_back(cand);
               } catch (...) {}
             }
+          }
+        }
+        if (_debug_print && _debug_print->getBool()) {
+          std::printf("YOLO(Python): balls=%zu blue=%zu yellow=%zu robots=%zu\n",
+                      cset->balls.size(), cset->robots_blue.size(), cset->robots_yellow.size(), cset->robots.size());
+          for (size_t i = 0; i < cset->balls.size(); ++i) {
+            const auto &c = cset->balls[i];
+            std::printf("python_ball #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                        i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+          }
+          for (size_t i = 0; i < cset->robots_blue.size(); ++i) {
+            const auto &c = cset->robots_blue[i];
+            std::printf("python_robot_blue #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                        i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
+          }
+          for (size_t i = 0; i < cset->robots_yellow.size(); ++i) {
+            const auto &c = cset->robots_yellow[i];
+            std::printf("python_robot_yellow #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                        i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
           }
         }
       } else {
