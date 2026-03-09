@@ -88,11 +88,19 @@ using namespace VarTypes;
       }
       const int iw = _input_w->getInt();
       const int ih = _input_h->getInt();
+      const int stride = 32;
+      const int aiw = std::max(stride, (iw / stride) * stride);
+      const int aih = std::max(stride, (ih / stride) * stride);
       float r = 1.0f;
       int dw = 0, dh = 0;
       cv::Mat letter;
-      letterbox(bgr, letter, iw, ih, r, dw, dh);
-      cv::Mat blob = cv::dnn::blobFromImage(letter, 1.0/255.0, cv::Size(iw, ih), cv::Scalar(), _swap_rb->getBool(), false);
+      letterbox(bgr, letter, aiw, aih, r, dw, dh);
+      if (_debug_net && _debug_net->getBool()) {
+        if (aiw != iw || aih != ih) {
+          std::printf("YOLO: input size aligned to stride32 (%d,%d) from (%d,%d)\n", aiw, aih, iw, ih);
+        }
+      }
+      cv::Mat blob = cv::dnn::blobFromImage(letter, 1.0/255.0, cv::Size(aiw, aih), cv::Scalar(), _swap_rb->getBool(), false);
       if (_debug_net && _debug_net->getBool()) {
         std::printf("YOLO: input=%dx%d letter=%dx%d r=%.4f dw=%d dh=%d swapRB=%d\n",
                     bgr.cols, bgr.rows, letter.cols, letter.rows, r, dw, dh, _swap_rb->getBool()?1:0);
@@ -104,7 +112,14 @@ using namespace VarTypes;
       }
       _net.setInput(blob);
       std::vector<cv::Mat> outs;
-      _net.forward(outs, _net.getUnconnectedOutLayersNames());
+      try {
+        _net.forward(outs, _net.getUnconnectedOutLayersNames());
+      } catch (const cv::Exception& e) {
+        if (_debug_net && _debug_net->getBool()) {
+          std::printf("YOLO: forward failed: %s\n", e.what());
+        }
+        return ProcessingFailed;
+      }
       if (_debug_net && _debug_net->getBool()) {
         std::printf("YOLO: outs=%zu\n", outs.size());
         for (size_t i = 0; i < outs.size(); ++i) {
