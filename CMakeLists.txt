@@ -31,7 +31,8 @@ find_package(Qt5Core REQUIRED)
 find_package(Qt5Widgets REQUIRED)
 find_package(Qt5OpenGL REQUIRED)
 # Note: Bluefox SDK is not compatible with some components of OpenCV. Take care when enabling more.
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio calib3d)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio calib3d dnn)
+add_definitions(-DHAVE_OPENCV_DNN)
 
 include(src/shared/CMakeLists.txt.inc)
 
@@ -162,6 +163,7 @@ set (SRCS ${SRCS}
 	src/app/plugins/plugin_detect_balls.cpp
 	src/app/plugins/plugin_detect_robots.cpp
 	src/app/plugins/plugin_find_blobs.cpp
+	src/app/plugins/plugin_detect_yolo_candidates.cpp
 	src/app/plugins/plugin_publishgeometry.cpp
 	src/app/plugins/plugin_legacypublishgeometry.cpp
 	src/app/plugins/plugin_runlength_encode.cpp
