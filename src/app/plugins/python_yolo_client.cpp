@@ -1,4 +1,6 @@
 #include "python_yolo_client.h"
+#include <QMutexLocker>
+#include <QStringList>
 
 PythonYoloClient::PythonYoloClient() {}
 PythonYoloClient::~PythonYoloClient() { stop(); }
@@ -42,7 +44,8 @@ bool PythonYoloClient::requestLine(const std::string& line, std::string& out, in
   QByteArray in = QByteArray::fromStdString(line);
   in.append('\n');
   _proc.write(in);
-  _proc.flush();
+  // QProcess has no flush(); ensure data is written
+  _proc.waitForBytesWritten(timeout_ms);
   if (!_proc.waitForReadyRead(timeout_ms)) return false;
   QByteArray all;
   // read one line

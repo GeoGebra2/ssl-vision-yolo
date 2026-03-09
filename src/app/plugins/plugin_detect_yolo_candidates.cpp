@@ -10,6 +10,7 @@
 #include <QDateTime>
 #include <QString>
 #include <QCoreApplication>
+#include <opencv2/imgcodecs.hpp>
 using namespace VarTypes;
  
  PluginDetectYoloCandidates::PluginDetectYoloCandidates(FrameBuffer* buffer)
