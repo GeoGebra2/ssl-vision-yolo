@@ -93,7 +93,7 @@ ProcessResult VisionPlugin::process(FrameData * data, RenderOptions * options) {
 
 
 void VisionPlugin::postProcess(FrameData * data, RenderOptions * options) {
-  (void)data;
+  (void)data; //显式地告诉编译器这些参数是有意未使用的
   (void)options;
 }
 

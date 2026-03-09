@@ -209,6 +209,19 @@ protected:
   int color_id_clear;
   int color_id_white;
   int color_id_team;
+  int color_id_yellow;
+  int color_id_blue;
+
+  // 添加历史机器人缓存相关变量
+  struct RobotHistory {
+      int frame_count;  // 缓冲帧数
+      std::vector<std::vector<SSL_DetectionRobot>> blue_history;
+      std::vector<std::vector<SSL_DetectionRobot>> yellow_history;
+      
+      RobotHistory() : frame_count(0) {}  // 初始化为0，稍后从配置加载
+  };
+  
+  RobotHistory robot_history_;
 
 protected:
     double getRegionArea(const CMVision::Region * reg, double z) const;
@@ -220,6 +233,10 @@ protected:
 
     //remove anything with a confidence of 0:
     void stripRobots(::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots);
+    
+    // 添加辅助方法用于机器人历史管理
+    void updateRobotHistory(int team_color_id, const ::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots);
+    void supplementMissingRobotsFromHistory(int team_color_id, ::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots, int max_robots);
 
 public:
     TeamDetector(LUT3D * lut3d, const CameraParameters& camera_params, const RoboCupField& field);

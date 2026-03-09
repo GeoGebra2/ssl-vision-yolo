@@ -107,6 +107,9 @@ RobotPattern::RobotPattern(VarList * team_root)
       _pattern_fitness_stddev = _pattern_fitness->findChildOrReplace(new VarDouble("Expected StdDev",0.5));
       _pattern_fitness_uniform = _pattern_fitness->findChildOrReplace(new VarDouble("Uniform",0.05));
 
+    _history_settings = _settings->findChildOrReplace(new VarList("History Settings"));
+      _history_buffer_frames = _history_settings->findChildOrReplace(new VarInt("History Buffer Frames", 5));
+
   _notifier.addRecursive(_settings);
   connect(&_notifier,SIGNAL(changeOccured(VarType*)),this,SLOT(slotChangeOccured(VarType *)));
 }

@@ -5,7 +5,7 @@
 			Default
 		</Var>
 		<Var name="Robot Height (mm)" type="double" minval="" maxval="">
-			140.000000
+			150.000000
 		</Var>
 	</Var>
 	<Var name="MRL" type="list">
@@ -93,7 +93,7 @@
 			ZJUNlict
 		</Var>
 		<Var name="Robot Height (mm)" type="double" minval="" maxval="">
-			148.725000
+			150.000000
 		</Var>
 	</Var>
 	<Var name="AIS" type="list">
@@ -232,12 +232,28 @@
 			90.000000
 		</Var>
 	</Var>
-  <Var name="The Bots" type="list">
+	<Var name="The Bots" type="list">
 		<Var name="Team Name" type="string">
 			The Bots
 		</Var>
 		<Var name="Robot Height (mm)" type="double" minval="" maxval="">
 			110.000000
+		</Var>
+	</Var>
+	<Var name="SRC" type="list">
+		<Var name="Team Name" type="string">
+			SRC
+		</Var>
+		<Var name="Robot Height (mm)" type="double" minval="" maxval="">
+			150.000000
+		</Var>
+	</Var>
+	<Var name="New Team 23" type="list">
+		<Var name="Team Name" type="string">
+			New Team 23
+		</Var>
+		<Var name="Robot Height (mm)" type="double" minval="" maxval="">
+			136.000000
 		</Var>
 	</Var>
 </VarXML>

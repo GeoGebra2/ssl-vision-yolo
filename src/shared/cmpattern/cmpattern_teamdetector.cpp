@@ -64,6 +64,11 @@ TeamDetector::TeamDetector(LUT3D * lut3d, const CameraParameters& camera_params,
 
   histogram=0;
 
+  color_id_yellow = _lut3d->getChannelID("Yellow");
+  if (color_id_yellow == -1) printf("WARNING color label 'Yellow' not defined in LUT!!!\n");
+  color_id_blue = _lut3d->getChannelID("Blue");
+  if (color_id_blue == -1) printf("WARNING color label 'Blue' not defined in LUT!!!\n");  
+
   color_id_cyan = _lut3d->getChannelID("Cyan");
   if (color_id_cyan == -1) printf("WARNING color label 'Cyan' not defined in LUT!!!\n");
 
@@ -88,10 +93,9 @@ TeamDetector::TeamDetector(LUT3D * lut3d, const CameraParameters& camera_params,
   if (color_id_field_green == -1) printf("WARNING color label 'Field Green' not defined in LUT!!!\n");
 }
 
-void TeamDetector::init(RobotPattern * robotPattern, Team * team)
-{
+void TeamDetector::init(RobotPattern * robotPattern, Team * team) {
   _robotPattern=robotPattern;
-  _team = team;
+  _team=team;
 
   if (histogram==0) histogram= new CMVision::Histogram(_lut3d->getChannelCount());
 
@@ -141,6 +145,9 @@ void TeamDetector::init(RobotPattern * robotPattern, Team * team)
   _pattern_fit_params.fit_variance=sq(_robotPattern->_pattern_fitness_stddev->getDouble());
   _pattern_fit_params.fit_uniform=_robotPattern->_pattern_fitness_uniform->getDouble();
 
+  // 读取历史缓冲帧数配置
+  robot_history_.frame_count = _robotPattern->_history_buffer_frames->getInt();
+
   //load team image:
 
 
@@ -178,22 +185,109 @@ TeamDetector::~TeamDetector()
   if (histogram !=0) delete histogram;
 }
 
-void TeamDetector::update(::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots, int team_color_id, int max_robots, const Image<raw8> * image, CMVision::ColorRegionList * colorlist, CMVision::RegionTree & reg_tree) {
+void TeamDetector::update(::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots, int team_color_id, int max_robots, const Image<raw8> * image, CMVision::ColorRegionList * colorlist, CMVision::RegionTree & reg_tree)
+{
   color_id_team=team_color_id;
-  _max_robots=max_robots;
+  _max_robots = max_robots;
+
+  // 先清空结果
   robots->Clear();
 
-  if (_unique_patterns) {
-    findRobotsByModel(robots,team_color_id,image,colorlist,reg_tree);
+    if (_unique_patterns) {
+    findRobotsByModel(robots,team_color_id,image,colorlist,reg_tree); //比赛都用这个
   } else {
-    findRobotsByTeamMarkerOnly(robots,team_color_id,image,colorlist);
+    findRobotsByTeamMarkerOnly(robots,team_color_id,image,colorlist); //不含方向，已经弃用，但是识别的异常稳定，不知道为什么
   }
 
 }
 
+void TeamDetector::updateRobotHistory(int team_color_id, const ::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots) {
+    if (team_color_id == color_id_blue) {
+        // Blue team
+        robot_history_.blue_history.push_back(std::vector<SSL_DetectionRobot>());
+        auto& current_frame = robot_history_.blue_history.back();
+        
+        for (int i = 0; i < robots->size(); ++i) {
+            current_frame.push_back(robots->Get(i));
+        }
+        
+        // 保持历史帧数量不超过设定值
+        while (robot_history_.blue_history.size() > (size_t)robot_history_.frame_count && robot_history_.frame_count > 0) {
+            robot_history_.blue_history.erase(robot_history_.blue_history.begin());
+        }
+    } else if (team_color_id == color_id_yellow) {
+        // Yellow team
+        robot_history_.yellow_history.push_back(std::vector<SSL_DetectionRobot>());
+        auto& current_frame = robot_history_.yellow_history.back();
+        
+        for (int i = 0; i < robots->size(); ++i) {
+            current_frame.push_back(robots->Get(i));
+        }
+        
+        // 保持历史帧数量不超过设定值
+        while (robot_history_.yellow_history.size() > (size_t)robot_history_.frame_count && robot_history_.frame_count > 0) {
+            robot_history_.yellow_history.erase(robot_history_.yellow_history.begin());
+        }
+    }
+}
 
+void TeamDetector::supplementMissingRobotsFromHistory(int team_color_id, ::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots, int max_robots) {
+    std::vector<std::vector<SSL_DetectionRobot>>* history_list = nullptr;
+    if (robot_history_.frame_count == 0) return;
+    if (team_color_id == color_id_blue) {
+      // Blue team
+      if (robot_history_.blue_history.empty()) return;
+      history_list = &robot_history_.blue_history;
+    } else if (team_color_id == color_id_yellow) {
+      // Yellow team
+      if (robot_history_.yellow_history.empty()) return;
+      history_list = &robot_history_.yellow_history;
+    } else {
+      return;  // Unknown team
+    }
 
-
+    if (!history_list || history_list->empty()) return;
+    
+    // 找出历史记录中机器人数量最多的一帧
+    const std::vector<SSL_DetectionRobot>* richest_frame = nullptr;
+    size_t max_robots_in_history = 0;
+    
+    for (const auto& frame : *history_list) {
+        if (frame.size() > max_robots_in_history) {
+            max_robots_in_history = frame.size();
+            richest_frame = &frame;
+        }
+    }
+    
+    if (!richest_frame || richest_frame->empty()) return;
+    
+    // 遍历最多机器人的那一帧，查找当前缺失的机器人
+    for (const auto& hist_robot : *richest_frame) {
+        bool found_match = false;
+        
+        // 检查当前检测结果中是否已存在该机器人
+        for (int i = 0; i < robots->size(); ++i) {
+            const auto& curr_robot = robots->Get(i);
+            
+            // 通过ID匹配，如果没有ID则通过位置匹配
+            if ((curr_robot.has_robot_id() && hist_robot.has_robot_id() && 
+                 curr_robot.robot_id() == hist_robot.robot_id()) ||
+                (!curr_robot.has_robot_id() && !hist_robot.has_robot_id() &&
+                 sqrt(pow(curr_robot.x() - hist_robot.x(), 2) + pow(curr_robot.y() - hist_robot.y(), 2)) < 0.05)) { // 5cm以内认为是同一个
+                found_match = true;
+                break;
+            }
+        }
+        
+        // 如果在当前检测结果中没有找到匹配的机器人，则从历史记录中添加
+        if (!found_match && robots->size() < max_robots) {
+            auto* new_robot = robots->Add();
+            *new_robot = hist_robot;
+            // 降低置信度表示这是从历史记录中恢复的
+            new_robot->set_confidence(0.5); 
+        }
+    }
+}
 
 void TeamDetector::findRobotsByTeamMarkerOnly(::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots, int team_color_id, const Image<raw8> * image, CMVision::ColorRegionList * colorlist)
 {
@@ -415,100 +509,140 @@ void TeamDetector::stripRobots(::google::protobuf::RepeatedPtrField< ::SSL_Detec
 
 void TeamDetector::findRobotsByModel(::google::protobuf::RepeatedPtrField< ::SSL_DetectionRobot >* robots, int team_color_id, const Image<raw8> * image, CMVision::ColorRegionList * colorlist, CMVision::RegionTree & reg_tree)
 {
-
-  (void)image;
+  // 设置最大检测数量，限制每个颜色的最大可检测标记点数
   const int MaxDetections = _other_markers_max_detections;
+  // 定义中心标记点对象，用于表示机器人的中心
   Marker cen; // center marker
+  // 创建一个标记点数组，用于存储其他非中心标记点
   Marker *markers = new Marker[MaxDetections];
+  // 设置查询距离，定义在区域树中查找相邻区域的最大距离
   const float marker_max_query_dist = _other_markers_max_query_distance;
+  // 设置标记点间最大距离，超过此距离的标记点不会被考虑为同一机器人
   const float marker_max_dist = _pattern_max_dist;
 
-  // partially forget old detections
-  //decaySeen();
-
+  // 初始化过滤器，获取指定颜色的所有连通区域
   filter_team.init( colorlist->getRegionList(team_color_id).getInitialElement());
+  // 定义当前处理的区域指针
   const CMVision::Region * reg=0;
+  // 定义要添加的机器人对象指针
   SSL_DetectionRobot * robot=0;
 
+  // 定义模式匹配的结果对象
   MultiPatternModel::PatternDetectionResult res;
-
+  int num_center_markers = 0;
+  // 遍历当前团队颜色的所有连通区域 filter_team就是按照队伍来的已经第一步处理之后的联通区域!
   while((reg = filter_team.getNext()) != 0) {
+    // 将当前区域的图像坐标转换为中心点坐标
     vector2d reg_img_center(reg->cen_x,reg->cen_y);
+    // 将图像坐标转换为场地坐标系中的3D坐标
     vector3d reg_center3d;
     _camera_params.image2field(reg_center3d,reg_img_center,_robot_height);
+    // 提取场地坐标系中的2D坐标(x,y)
     vector2d reg_center(reg_center3d.x,reg_center3d.y);
-    //TODO add masking:
-    //if(det.mask.get(reg->cen_x,reg->cen_y) >= 0.5){
+
+
+    // 检查该区域是否在场地范围内（不是边界外区域）
     if (field_filter.isInFieldOrPlayableBoundary(reg_center)) {
+      // 将当前区域设置为中心标记点
+      ++num_center_markers;
       cen.set(reg,reg_center3d,getRegionArea(reg,_robot_height));
+      // 初始化相邻标记点计数器
       int num_markers = 0;
 
+      // 在区域树中开始查询邻近区域，以当前区域为中心，最大查询距离为marker_max_query_dist
       reg_tree.startQuery(*reg,marker_max_query_dist);
       double sd=0.0;
       CMVision::Region *mreg;
+      // 遍历所有在查询距离内的相邻区域
       while((mreg=reg_tree.getNextNearest(sd))!=0 && num_markers<MaxDetections) {
-        //TODO: implement masking:
-        // filter_other.check(*mreg) && det.mask.get(mreg->cen_x,mreg->cen_y)>=0.5
-
+        // 检查该区域是否符合"其他标记点"的过滤条件，且属于模型使用的颜色
         if(filter_others.check(*mreg) && model.usesColor(mreg->color)) {
+          // 获取标记点的图像坐标
           vector2d marker_img_center(mreg->cen_x,mreg->cen_y);
+          // 转换为场地坐标系中的3D坐标
           vector3d marker_center3d;
           _camera_params.image2field(marker_center3d,marker_img_center,_robot_height);
+          // 创建标记点对象并初始化
           Marker &m = markers[num_markers];
 
           m.set(mreg,marker_center3d,getRegionArea(mreg,_robot_height));
+          // 计算标记点相对于中心的距离和角度
           vector2f ofs = m.loc - cen.loc;
           m.dist = ofs.length();
           m.angle = ofs.angle();
 
+          // 检查标记点是否在允许的最大距离内
           if(m.dist>0.0 && m.dist<marker_max_dist){
+            // 如果是，则将此标记点加入数组
             num_markers++;
           }
         }
       }
+      // 结束区域树查询
       reg_tree.endQuery();
 
+      // 如果找到至少2个标记点（构成机器人必须有至少2个标记点）
       if(num_markers >= 2){
+        // 根据角度对所有标记点进行排序，便于后续模式匹配
         CMPattern::PatternProcessing::sortMarkersByAngle(markers,num_markers);
+        // 计算相邻标记点之间的距离和角度差
         for(int i=0; i<num_markers; i++){
-          /*DEBUG CODE:
-          char colorchar='?';
-          if (markers[i].id==color_id_green) colorchar='g';
-          if (markers[i].id==color_id_pink) colorchar='p';
-          if (markers[i].id==color_id_white) colorchar='w';
-          if (markers[i].id==color_id_team) colorchar='t';
-          if (markers[i].id==color_id_field_green) colorchar='f';
-          if (markers[i].id==color_id_cyan) colorchar='c';
-          printf("%c ",colorchar);*/
-          int j = (i + 1) % num_markers;
-          markers[i].next_dist = dist(markers[i].loc,markers[j].loc);
-          markers[i].next_angle_dist = angle_pos(angle_diff(markers[i].angle,markers[j].angle));
+          int j = (i + 1) % num_markers;  // 环形索引，最后一个元素的下一个为第一个
+          markers[i].next_dist = dist(markers[i].loc,markers[j].loc);  // 计算与下一个标记点的距离
+          markers[i].next_angle_dist = angle_pos(angle_diff(markers[i].angle,markers[j].angle)); // 计算与下一个标记点的角度差
         }
 
-        if (model.findPattern(res,markers,num_markers,_pattern_fit_params,_camera_params)) {
-              robot=addRobot(robots,res.conf,_max_robots*2);
-              if (robot!=0) {
-                //setup robot:
-                robot->set_x(cen.loc.x);
-                robot->set_y(cen.loc.y);
-                if (_have_angle) robot->set_orientation(res.angle);
-                robot->set_robot_id(res.id);
-                robot->set_pixel_x(reg->cen_x);
-                robot->set_pixel_y(reg->cen_y);
-                robot->set_height(cen.height);
-              }
+        // 使用多模式模型进行模式匹配，尝试识别机器人
+        // 这里会执行以下步骤：
+        // 1. 遍历所有可能的偏移量（处理旋转不变性）
+        // 2. 为每个偏移量计算图案编码（颜色序列）
+        // 3. 与预定义的机器人图案模板进行匹配
+        // 4. 计算拟合误差，找到最佳匹配
+        // 5. 如果匹配成功，计算机器人的位置、方向和ID
+        if (model.findPattern(res,markers,num_markers,_pattern_fit_params,_camera_params))//已经debug条件断点判断这个地方几乎不会false，也就是都会检测到 
+        {
+          // 如果成功匹配到模式，创建一个新的机器人检测结果
+          robot=addRobot(robots,res.conf,_max_robots*2);
+          if (robot!=0) {
+            // 设置机器人的位置信息
+            robot->set_x(cen.loc.x);
+            robot->set_y(cen.loc.y);
+            // 如果有角度信息，设置机器人的朝向
+            if (_have_angle) robot->set_orientation(res.angle);
+            // 设置机器人的ID（根据模式匹配结果）
+            robot->set_robot_id(res.id);
+            // 设置像素坐标
+            robot->set_pixel_x(reg->cen_x);
+            robot->set_pixel_y(reg->cen_y);
+            // 设置机器人高度
+            robot->set_height(cen.height);
+          }
         }
       }
     }
   }
-  //remove items with 0-confidence:
+
+  // 移除置信度为0的机器人检测结果
   stripRobots(robots);
 
-  //remove extra items:
+  // 如果检测到的机器人数量超过最大限制，移除多余的项
   while(robots->size() > _max_robots) {
     robots->RemoveLast();
   }
-
+  
+  // 更新历史记录
+  updateRobotHistory(team_color_id, robots);
+  
+  // 从历史记录中补全缺失的机器人
+  supplementMissingRobotsFromHistory(team_color_id, robots, _max_robots);
+  
+  // 再次移除超出最大数量的机器人（由于补全可能超过限制）
+  while(robots->size() > _max_robots) {
+    robots->RemoveLast();
+  }
+  // std::cout<<robots->size()<<" robots detected"<<std::endl; //debug msg
+  // std::cout<<"num_center_markers: "<<num_center_markers<<std::endl;//debug msg 
+  // 释放之前分配的标记点数组内存
   delete[] markers;
 }
 

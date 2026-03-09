@@ -115,6 +115,9 @@ protected:
       VarDouble * _pattern_fitness_stddev;
       VarDouble * _pattern_fitness_uniform;
 
+    VarList * _history_settings;
+      VarInt * _history_buffer_frames;
+
 public:
     RobotPattern(VarList * team_root);
 

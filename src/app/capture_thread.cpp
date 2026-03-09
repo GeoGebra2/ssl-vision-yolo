@@ -336,7 +336,7 @@ void CaptureThread::run() {
               stack_mutex.lock();
               if (stack!=0) {
                 stack->process(d);
-                stack->postProcess(d);
+                stack->postProcess(d);   //多态行为
               }
               stack_mutex.unlock();
               rb->nextWrite(true);

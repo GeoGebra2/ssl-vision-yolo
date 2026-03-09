@@ -422,6 +422,7 @@ bool MultiPatternModel::findPattern(PatternDetectionResult & result, Marker * ma
     }
   }
 
+  // 如果找到了符合条件的最佳匹配
   if(best_idx >= 0){
     const Pattern &p = patterns[best_idx];
 
@@ -433,11 +434,11 @@ bool MultiPatternModel::findPattern(PatternDetectionResult & result, Marker * ma
       markers[i].loc.set(marker_center3d.x,marker_center3d.y);
     }
 
-    // rearrange vision markers so that the order matches the pattern model
+    // 重新排列标记点顺序，使实际检测到的标记点顺序与模板匹配
     Marker tmp[MaxMarkers];
     roll(markers,tmp,num_markers,num_markers-best_ofs);
 
-    // get the mean location of markers
+    // 计算所有标记点的平均位置（机器人中心位置）
     vector2f cen_avg;
     cen_avg.zero();
     for(int i=0; i<num_markers; i++){
@@ -450,8 +451,11 @@ bool MultiPatternModel::findPattern(PatternDetectionResult & result, Marker * ma
     orient.zero();
     for(int i=0; i<num_markers; i++){
       for(int j=0; j<i; j++){
+        // 计算两个标记点之间的向量
         vector2f vo = markers[i].loc - markers[j].loc;
+        // 获取模板中相应标记点的理想方向向量
         vector2f dir = (p.markers[i].loc - p.markers[j].loc).norm();
+        // 将实际向量投影到理想方向上，累加得到最终方向
         vector2f o = dir.project_in(vo);
         orient += o;
       }
@@ -462,13 +466,13 @@ bool MultiPatternModel::findPattern(PatternDetectionResult & result, Marker * ma
     // fix bias in mean marker position
     cen_avg -= orient.project_out(p.marker_mean);
 
-    // save results
-    result.id = patterns[best_idx].robot_id;
-    result.idx = best_idx;
-    result.loc   = cen_avg;
-    result.angle = angle;
-    result.conf  = SSEVsUniform(best_sse,fit_params.fit_variance,fit_params.fit_uniform);
-    return true;
+    // 保存最终的检测结果
+    result.id = patterns[best_idx].robot_id;  // 机器人ID
+    result.idx = best_idx;                    // 匹配到的图案索引
+    result.loc   = cen_avg;                   // 机器人位置
+    result.angle = angle;                     // 机器人方向
+    result.conf  = SSEVsUniform(best_sse,fit_params.fit_variance,fit_params.fit_uniform);  // 计算置信度
+    return true;  // 返回匹配成功
   } else {
     result.reset();
     return false;

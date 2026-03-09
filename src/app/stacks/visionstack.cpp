@@ -55,9 +55,10 @@ void VisionStack::process(FrameData * data) {
     std::cout << std::setw(23) << std::left << "All"
               << std::setw(5) << std::right << duration.count() << " μs" << std::endl << std::endl;
   } else {
-    for (auto p : stack) {
+    for (auto p : stack) 
+    {
       p->lock();
-      p->process(data,opts);
+      p->process(data,opts); // multiple behaviours and one of them goes to detector!
       p->unlock();
     }
   }
