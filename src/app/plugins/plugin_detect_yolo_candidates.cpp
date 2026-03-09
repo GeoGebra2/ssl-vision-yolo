@@ -12,7 +12,7 @@ using namespace VarTypes;
   _settings->addChild(_model_path = new VarString("Model Path", "d:/ssl-vision-yolo/RoboCupVision/runs/detect/train/weights/best.onnx"));
   _settings->addChild(_input_w = new VarInt("Input Width", 640));
   _settings->addChild(_input_h = new VarInt("Input Height", 640));
-  _settings->addChild(_swap_rb = new VarBool("Swap RB", true));
+  _settings->addChild(_swap_rb = new VarBool("Swap RB", false));
   _settings->addChild(_conf_th = new VarDouble("Conf Threshold", 0.25));
   _settings->addChild(_iou_th = new VarDouble("IoU Threshold", 0.5));
   _settings->addChild(_robot_class_ids = new VarString("Robot Class IDs (csv)", "1,2"));
@@ -20,6 +20,7 @@ using namespace VarTypes;
   _settings->addChild(_robot_blue_class_ids = new VarString("Robot Blue Class IDs (csv)", "1"));
   _settings->addChild(_robot_yellow_class_ids = new VarString("Robot Yellow Class IDs (csv)", "2"));
   _settings->addChild(_debug_print = new VarBool("Debug Print", false));
+  _settings->addChild(_debug_net = new VarBool("Debug Net Verbose", false));
  }
  
  PluginDetectYoloCandidates::~PluginDetectYoloCandidates() {
@@ -39,6 +40,7 @@ using namespace VarTypes;
   delete _robot_blue_class_ids;
   delete _robot_yellow_class_ids;
   delete _debug_print;
+  delete _debug_net;
  }
  
  ProcessResult PluginDetectYoloCandidates::process(FrameData* data, RenderOptions* options) {
@@ -69,8 +71,14 @@ using namespace VarTypes;
         _net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
         _net_loaded = true;
         _loaded_model_path = modelPath;
+        if (_debug_net && _debug_net->getBool()) {
+          std::printf("YOLO: loaded ONNX '%s'\n", modelPath.c_str());
+        }
       } catch (...) {
         _net_loaded = false;
+        if (_debug_net && _debug_net->getBool()) {
+          std::printf("YOLO: failed to load ONNX '%s'\n", modelPath.c_str());
+        }
       }
     }
     if (_net_loaded) {
@@ -85,9 +93,33 @@ using namespace VarTypes;
       cv::Mat letter;
       letterbox(bgr, letter, iw, ih, r, dw, dh);
       cv::Mat blob = cv::dnn::blobFromImage(letter, 1.0/255.0, cv::Size(iw, ih), cv::Scalar(), _swap_rb->getBool(), false);
+      if (_debug_net && _debug_net->getBool()) {
+        std::printf("YOLO: input=%dx%d letter=%dx%d r=%.4f dw=%d dh=%d swapRB=%d\n",
+                    bgr.cols, bgr.rows, letter.cols, letter.rows, r, dw, dh, _swap_rb->getBool()?1:0);
+        int d0 = (blob.dims >= 1) ? blob.size[0] : 0;
+        int d1 = (blob.dims >= 2) ? blob.size[1] : 0;
+        int d2 = (blob.dims >= 3) ? blob.size[2] : 0;
+        int d3 = (blob.dims >= 4) ? blob.size[3] : 0;
+        std::printf("YOLO: blob dims=%d shape=(%d,%d,%d,%d)\n", blob.dims, d0, d1, d2, d3);
+      }
       _net.setInput(blob);
       std::vector<cv::Mat> outs;
       _net.forward(outs, _net.getUnconnectedOutLayersNames());
+      if (_debug_net && _debug_net->getBool()) {
+        std::printf("YOLO: outs=%zu\n", outs.size());
+        for (size_t i = 0; i < outs.size(); ++i) {
+          const cv::Mat& m = outs[i];
+          if (m.dims == 2) {
+            std::printf("outs[%zu]: dims=2 shape=(%d,%d)\n", i, m.rows, m.cols);
+          } else if (m.dims == 3) {
+            std::printf("outs[%zu]: dims=3 shape=(%d,%d,%d)\n", i, m.size[0], m.size[1], m.size[2]);
+          } else if (m.dims == 4) {
+            std::printf("outs[%zu]: dims=4 shape=(%d,%d,%d,%d)\n", i, m.size[0], m.size[1], m.size[2], m.size[3]);
+          } else {
+            std::printf("outs[%zu]: dims=%d\n", i, m.dims);
+          }
+        }
+      }
 
       cv::Mat out;
       if (outs.size() == 1) {
@@ -100,27 +132,52 @@ using namespace VarTypes;
       } else {
         return ProcessingOk;
       }
+      if (_debug_net && _debug_net->getBool()) {
+        if (out.dims == 2) {
+          std::printf("YOLO: merged out dims=2 shape=(%d,%d)\n", out.rows, out.cols);
+        } else if (out.dims == 3) {
+          std::printf("YOLO: merged out dims=3 shape=(%d,%d,%d)\n", out.size[0], out.size[1], out.size[2]);
+        } else if (out.dims == 4) {
+          std::printf("YOLO: merged out dims=4 shape=(%d,%d,%d,%d)\n", out.size[0], out.size[1], out.size[2], out.size[3]);
+        } else {
+          std::printf("YOLO: merged out dims=%d\n", out.dims);
+        }
+      }
 
       cv::Mat det;
       if (out.dims == 3 && out.size[0] == 1) {
-        int c1 = out.size[1];
-        int c2 = out.size[2];
-        if (c1 == 84) {
-          det = out.reshape(1, { c1, c2 });
+        int a = out.size[1];
+        int b = out.size[2];
+        if (b >= 5) {
+          det = out.reshape(1, { a, b });
+        } else if (a >= 5) {
+          det = out.reshape(1, { b, a });
           det = det.t();
-        } else if (c2 == 84) {
-          det = out.reshape(1, { c2, c1 });
         } else {
           return ProcessingOk;
         }
-      } else if (out.dims == 2 && (out.cols == 84 || out.rows == 84)) {
-        det = (out.cols == 84) ? out : out.t();
+      } else if (out.dims == 2) {
+        int r = out.rows;
+        int c = out.cols;
+        if (c >= 5) {
+          det = out;
+        } else if (r >= 5) {
+          det = out.t();
+        } else {
+          return ProcessingOk;
+        }
       } else {
         return ProcessingOk;
       }
 
       const int num = det.rows;
       const int num_classes = det.cols - 4;
+      if (num_classes <= 0) {
+        return ProcessingOk;
+      }
+      if (_debug_net && _debug_net->getBool()) {
+        std::printf("YOLO: det shape=(%d,%d) num_classes=%d\n", det.rows, det.cols, num_classes);
+      }
 
       std::vector<int> cls_ids;
       std::vector<float> scores;
@@ -159,6 +216,9 @@ using namespace VarTypes;
 
       std::vector<int> keep;
       cv::dnn::NMSBoxes(boxes, scores, confTh, (float)_iou_th->getDouble(), keep);
+      if (_debug_net && _debug_net->getBool()) {
+        std::printf("YOLO: NMS kept=%zu\n", keep.size());
+      }
 
       std::vector<int> robot_ids, ball_ids, blue_ids, yellow_ids;
       parseClassIdList(_robot_class_ids->getString(), robot_ids);

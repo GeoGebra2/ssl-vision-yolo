@@ -25,6 +25,7 @@
   VarString* _robot_blue_class_ids;
   VarString* _robot_yellow_class_ids;
   VarBool* _debug_print;
+  VarBool* _debug_net;
 
   cv::dnn::Net _net;
   bool _net_loaded = false;
