@@ -39,7 +39,7 @@ using namespace VarTypes;
   _settings->addChild(_py_timeout_ms = new VarInt("Python Timeout ms", 200));
   _settings->addChild(_py_use_jpeg = new VarBool("Send JPEG", true));
   _settings->addChild(_py_jpeg_quality = new VarInt("JPEG Quality", 80));
-  _py = new PythonYoloClient();
+  _py = nullptr;
  }
  
  PluginDetectYoloCandidates::~PluginDetectYoloCandidates() {
@@ -89,12 +89,20 @@ using namespace VarTypes;
    }
  
 #ifdef HAVE_OPENCV_DNN
+  if (_use_python->getBool() && _use_dnn->getBool()) {
+    _use_dnn->setBool(false);
+  }
+#endif
+#ifdef HAVE_OPENCV_DNN
   if (_use_python->getBool()) {
-    // ensure process started
-    if (_py && !_py->isRunning()) {
+    // ensure client exists and process started in this thread
+    if (!_py) {
+      _py = new PythonYoloClient();
+    }
+    if (!_py->isRunning()) {
       _py->start(_py_command->getString(), _py_script->getString(), _py_args->getString());
     }
-    if (_py && _py->isRunning()) {
+    if (_py->isRunning()) {
       cv::Mat bgr;
       if (!toBGRMat(data->video, bgr)) {
         return ProcessingFailed;
@@ -199,11 +207,11 @@ using namespace VarTypes;
 #endif
 
 #ifdef HAVE_OPENCV_DNN
-  if (_use_dnn->getBool()) {
+  if (_use_dnn->getBool() && !_use_python->getBool()) {
     const std::string modelPath = _model_path->getString();
     if (!_net_loaded || _loaded_model_path != modelPath) {
       try {
-        _net = cv::dnn::readNet(modelPath);
+        _net = cv::dnn::readNetFromONNX(modelPath);
         _net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
         _net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
         _net_loaded = true;

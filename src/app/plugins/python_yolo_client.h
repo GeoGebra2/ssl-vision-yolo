@@ -14,6 +14,6 @@ public:
   void stop();
   bool requestLine(const std::string& line, std::string& out, int timeout_ms);
 private:
-  QProcess _proc;
+  QProcess* _proc;
   QMutex _mutex;
 };
