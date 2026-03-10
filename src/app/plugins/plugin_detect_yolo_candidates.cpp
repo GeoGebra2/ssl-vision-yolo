@@ -39,10 +39,10 @@ using namespace VarTypes;
   _settings->addChild(_py_timeout_ms = new VarInt("Python Timeout ms", 200));
   _settings->addChild(_py_use_jpeg = new VarBool("Send JPEG", true));
   _settings->addChild(_py_jpeg_quality = new VarInt("JPEG Quality", 80));
-  _py = nullptr;
  }
  
  PluginDetectYoloCandidates::~PluginDetectYoloCandidates() {
+  stopPythonWorker();
    delete _settings;
    delete _enabled;
    delete _mock;
@@ -67,7 +67,6 @@ using namespace VarTypes;
   delete _py_timeout_ms;
   delete _py_use_jpeg;
   delete _py_jpeg_quality;
-  if (_py) { _py->stop(); delete _py; _py = nullptr; }
  }
  
  ProcessResult PluginDetectYoloCandidates::process(FrameData* data, RenderOptions* options) {
@@ -95,150 +94,62 @@ using namespace VarTypes;
 #endif
 #ifdef HAVE_OPENCV_DNN
   if (_use_python->getBool()) {
-    // ensure client exists and process started in this thread
-    if (!_py) {
-      _py = new PythonYoloClient();
+    ensurePythonWorker();
+    cv::Mat bgr;
+    if (!toBGRMat(data->video, bgr)) {
+      return ProcessingFailed;
     }
-    if (!_py->isRunning()) {
-      _py->start(_py_command->getString(), _py_script->getString(), _py_args->getString());
+    PythonTask task;
+    task.bgr = bgr.clone();
+    task.command = _py_command->getString();
+    task.script = _py_script->getString();
+    task.args = _py_args->getString();
+    task.model_path = _model_path->getString();
+    task.conf = _conf_th->getDouble();
+    task.iou = _iou_th->getDouble();
+    task.timeout_ms = _py_timeout_ms->getInt();
+    task.use_jpeg = _py_use_jpeg->getBool();
+    task.jpeg_quality = _py_jpeg_quality->getInt();
+    std::vector<Yolo::Candidate> raw;
+    bool ready = false;
+    int dropped = 0;
+    {
+      std::lock_guard<std::mutex> lk(_py_mutex);
+      if (_py_has_pending) _py_drop_count++;
+      _py_pending_task = std::move(task);
+      _py_has_pending = true;
+      raw = _py_last_raw;
+      ready = _py_last_ready;
+      dropped = _py_drop_count;
     }
-    if (_py->isRunning()) {
-      cv::Mat bgr;
-      if (!toBGRMat(data->video, bgr)) {
-        return ProcessingFailed;
+    _py_cv.notify_one();
+    std::vector<int> robot_ids, ball_ids, blue_ids, yellow_ids;
+    parseClassIdList(_robot_class_ids->getString(), robot_ids);
+    parseClassIdList(_ball_class_ids->getString(), ball_ids);
+    parseClassIdList(_robot_blue_class_ids->getString(), blue_ids);
+    parseClassIdList(_robot_yellow_class_ids->getString(), yellow_ids);
+    fillCandidateSet(raw, cset, robot_ids, ball_ids, blue_ids, yellow_ids);
+    if (_debug_print && _debug_print->getBool()) {
+      std::printf("YOLO(Python): balls=%zu blue=%zu yellow=%zu robots=%zu ready=%d dropped=%d\n",
+                  cset->balls.size(), cset->robots_blue.size(), cset->robots_yellow.size(), cset->robots.size(),
+                  ready ? 1 : 0, dropped);
+      for (size_t i = 0; i < cset->balls.size(); ++i) {
+        const auto &c = cset->balls[i];
+        std::printf("python_ball #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                    i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
       }
-      std::string payload;
-      if (_py_use_jpeg->getBool()) {
-        std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, _py_jpeg_quality->getInt() };
-        std::vector<uchar> buf;
-        cv::imencode(".jpg", bgr, buf, params);
-        QByteArray qbytes((const char*)buf.data(), (int)buf.size());
-        QByteArray b64 = qbytes.toBase64();
-        payload.assign(b64.constData(), (size_t)b64.size());
-      } else {
-        // raw BGR base64
-        QByteArray qbytes((const char*)bgr.data, bgr.cols * bgr.rows * 3);
-        QByteArray b64 = qbytes.toBase64();
-        payload.assign(b64.constData(), (size_t)b64.size());
+      for (size_t i = 0; i < cset->robots_blue.size(); ++i) {
+        const auto &c = cset->robots_blue[i];
+        std::printf("python_robot_blue #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                    i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
       }
-      std::ostringstream oss;
-      oss << "{";
-      oss << "\"width\":" << bgr.cols << ",\"height\":" << bgr.rows;
-      oss << ",\"format\":\"BGR\",\"jpeg\":" << (_py_use_jpeg->getBool() ? "true" : "false");
-      oss << ",\"conf\":" << _conf_th->getDouble() << ",\"iou\":" << _iou_th->getDouble();
-      oss << ",\"model\":\"" << _model_path->getString() << "\"";
-      oss << ",\"image_b64\":\"" << payload << "\"";
-      oss << "}";
-      std::string reply;
-      if (_py->requestLine(oss.str(), reply, _py_timeout_ms->getInt())) {
-        // parse detections: support JSON array [{x1,...}] or CSV lines
-        auto trim = [](std::string s)->std::string {
-          size_t a = s.find_first_not_of(" \r\n\t");
-          size_t b = s.find_last_not_of(" \r\n\t");
-          if (a==std::string::npos) return std::string();
-          return s.substr(a, b-a+1);
-        };
-        std::string r = trim(reply);
-        std::vector<int> robot_ids, ball_ids, blue_ids, yellow_ids;
-        parseClassIdList(_robot_class_ids->getString(), robot_ids);
-        parseClassIdList(_ball_class_ids->getString(), ball_ids);
-        parseClassIdList(_robot_blue_class_ids->getString(), blue_ids);
-        parseClassIdList(_robot_yellow_class_ids->getString(), yellow_ids);
-        auto isIn = [](int id, const std::vector<int>& arr)->bool {
-          for (int v : arr) if (v == id) return true;
-          return false;
-        };
-        if (!r.empty() && r[0] == '[') {
-          // naive JSON array parse
-          size_t pos = 0;
-          while (true) {
-            size_t p1 = r.find('{', pos);
-            if (p1 == std::string::npos) break;
-            size_t p2 = r.find('}', p1);
-            if (p2 == std::string::npos) break;
-            std::string obj = r.substr(p1+1, p2-p1-1);
-            int x1=0,y1=0,x2=0,y2=0,cls=0; double conf=0.0;
-            auto getVal = [&](const char* key)->std::string {
-              std::string k = std::string(key);
-              size_t kpos = obj.find(k);
-              if (kpos==std::string::npos) return std::string();
-              size_t colon = obj.find(':', kpos);
-              if (colon==std::string::npos) return std::string();
-              size_t comma = obj.find(',', colon+1);
-              std::string val = obj.substr(colon+1, (comma==std::string::npos? obj.size(): comma) - (colon+1));
-              return trim(val);
-            };
-            try {
-              x1 = std::stoi(getVal("x1"));
-              y1 = std::stoi(getVal("y1"));
-              x2 = std::stoi(getVal("x2"));
-              y2 = std::stoi(getVal("y2"));
-              cls = std::stoi(getVal("class_id"));
-              conf = std::stod(getVal("conf"));
-              Yolo::Candidate cand;
-              cand.x1 = x1; cand.y1 = y1; cand.x2 = x2; cand.y2 = y2; cand.conf = (float)conf; cand.class_id = cls;
-              bool is_robot = isIn(cand.class_id, robot_ids) || isIn(cand.class_id, blue_ids) || isIn(cand.class_id, yellow_ids);
-              if (is_robot) cset->robots.push_back(cand);
-              if (isIn(cand.class_id, blue_ids)) cset->robots_blue.push_back(cand);
-              if (isIn(cand.class_id, yellow_ids)) cset->robots_yellow.push_back(cand);
-              if (isIn(cand.class_id, ball_ids)) cset->balls.push_back(cand);
-            } catch (...) {}
-            pos = p2+1;
-          }
-        } else {
-          // CSV per line: x1,y1,x2,y2,conf,class_id
-          std::istringstream iss(r);
-          std::string line;
-          while (std::getline(iss, line)) {
-            line = trim(line);
-            if (line.empty()) continue;
-            std::istringstream ls(line);
-            std::string tok;
-            std::vector<std::string> toks;
-            while (std::getline(ls, tok, ',')) toks.push_back(trim(tok));
-            if (toks.size() >= 6) {
-              try {
-                int x1 = std::stoi(toks[0]);
-                int y1 = std::stoi(toks[1]);
-                int x2 = std::stoi(toks[2]);
-                int y2 = std::stoi(toks[3]);
-                double conf = std::stod(toks[4]);
-                int cls = std::stoi(toks[5]);
-                Yolo::Candidate cand;
-                cand.x1 = x1; cand.y1 = y1; cand.x2 = x2; cand.y2 = y2; cand.conf = (float)conf; cand.class_id = cls;
-                bool is_robot = isIn(cand.class_id, robot_ids) || isIn(cand.class_id, blue_ids) || isIn(cand.class_id, yellow_ids);
-                if (is_robot) cset->robots.push_back(cand);
-                if (isIn(cand.class_id, blue_ids)) cset->robots_blue.push_back(cand);
-                if (isIn(cand.class_id, yellow_ids)) cset->robots_yellow.push_back(cand);
-                if (isIn(cand.class_id, ball_ids)) cset->balls.push_back(cand);
-              } catch (...) {}
-            }
-          }
-        }
-        if (_debug_print && _debug_print->getBool()) {
-          std::printf("YOLO(Python): balls=%zu blue=%zu yellow=%zu robots=%zu\n",
-                      cset->balls.size(), cset->robots_blue.size(), cset->robots_yellow.size(), cset->robots.size());
-          for (size_t i = 0; i < cset->balls.size(); ++i) {
-            const auto &c = cset->balls[i];
-            std::printf("python_ball #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
-                        i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
-          }
-          for (size_t i = 0; i < cset->robots_blue.size(); ++i) {
-            const auto &c = cset->robots_blue[i];
-            std::printf("python_robot_blue #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
-                        i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
-          }
-          for (size_t i = 0; i < cset->robots_yellow.size(); ++i) {
-            const auto &c = cset->robots_yellow[i];
-            std::printf("python_robot_yellow #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
-                        i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
-          }
-        }
-      } else {
-        // timeout or failure
+      for (size_t i = 0; i < cset->robots_yellow.size(); ++i) {
+        const auto &c = cset->robots_yellow[i];
+        std::printf("python_robot_yellow #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
+                    i, c.x1, c.y1, c.x2, c.y2, c.conf, c.class_id);
       }
-      return ProcessingOk;
     }
+    return ProcessingOk;
   }
 #endif
 
@@ -584,5 +495,161 @@ bool PluginDetectYoloCandidates::toBGRMat(const RawImage& src, cv::Mat& bgr) {
       return true;
     }
   }
+}
+
+bool PluginDetectYoloCandidates::parsePythonReply(const std::string& reply, std::vector<Yolo::Candidate>& out) {
+  out.clear();
+  auto trim = [](const std::string& s)->std::string {
+    size_t a = s.find_first_not_of(" \r\n\t");
+    size_t b = s.find_last_not_of(" \r\n\t");
+    if (a == std::string::npos) return std::string();
+    return s.substr(a, b - a + 1);
+  };
+  std::string r = trim(reply);
+  if (r.empty()) return true;
+  if (r[0] == '[') {
+    size_t pos = 0;
+    while (true) {
+      size_t p1 = r.find('{', pos);
+      if (p1 == std::string::npos) break;
+      size_t p2 = r.find('}', p1);
+      if (p2 == std::string::npos) break;
+      std::string obj = r.substr(p1 + 1, p2 - p1 - 1);
+      auto getVal = [&](const char* key)->std::string {
+        std::string k = std::string(key);
+        size_t kpos = obj.find(k);
+        if (kpos == std::string::npos) return std::string();
+        size_t colon = obj.find(':', kpos);
+        if (colon == std::string::npos) return std::string();
+        size_t comma = obj.find(',', colon + 1);
+        std::string val = obj.substr(colon + 1, (comma == std::string::npos ? obj.size() : comma) - (colon + 1));
+        return trim(val);
+      };
+      try {
+        Yolo::Candidate cand;
+        cand.x1 = std::stoi(getVal("x1"));
+        cand.y1 = std::stoi(getVal("y1"));
+        cand.x2 = std::stoi(getVal("x2"));
+        cand.y2 = std::stoi(getVal("y2"));
+        cand.class_id = std::stoi(getVal("class_id"));
+        cand.conf = (float)std::stod(getVal("conf"));
+        out.push_back(cand);
+      } catch (...) {}
+      pos = p2 + 1;
+    }
+    return true;
+  }
+  std::istringstream iss(r);
+  std::string line;
+  while (std::getline(iss, line)) {
+    line = trim(line);
+    if (line.empty()) continue;
+    std::istringstream ls(line);
+    std::string tok;
+    std::vector<std::string> toks;
+    while (std::getline(ls, tok, ',')) toks.push_back(trim(tok));
+    if (toks.size() < 6) continue;
+    try {
+      Yolo::Candidate cand;
+      cand.x1 = std::stoi(toks[0]);
+      cand.y1 = std::stoi(toks[1]);
+      cand.x2 = std::stoi(toks[2]);
+      cand.y2 = std::stoi(toks[3]);
+      cand.conf = (float)std::stod(toks[4]);
+      cand.class_id = std::stoi(toks[5]);
+      out.push_back(cand);
+    } catch (...) {}
+  }
+  return true;
+}
+
+void PluginDetectYoloCandidates::fillCandidateSet(const std::vector<Yolo::Candidate>& src, Yolo::CandidateSet* cset,
+                                                  const std::vector<int>& robot_ids, const std::vector<int>& ball_ids,
+                                                  const std::vector<int>& blue_ids, const std::vector<int>& yellow_ids) {
+  auto isIn = [](int id, const std::vector<int>& arr)->bool {
+    for (int v : arr) if (v == id) return true;
+    return false;
+  };
+  for (const auto& cand : src) {
+    bool is_robot = isIn(cand.class_id, robot_ids) || isIn(cand.class_id, blue_ids) || isIn(cand.class_id, yellow_ids);
+    if (is_robot) cset->robots.push_back(cand);
+    if (isIn(cand.class_id, blue_ids)) cset->robots_blue.push_back(cand);
+    if (isIn(cand.class_id, yellow_ids)) cset->robots_yellow.push_back(cand);
+    if (isIn(cand.class_id, ball_ids)) cset->balls.push_back(cand);
+  }
+}
+
+void PluginDetectYoloCandidates::ensurePythonWorker() {
+  std::lock_guard<std::mutex> lk(_py_mutex);
+  if (_py_worker_started) return;
+  _py_stop = false;
+  _py_worker_started = true;
+  _py_worker = std::thread(&PluginDetectYoloCandidates::pythonWorkerMain, this);
+}
+
+void PluginDetectYoloCandidates::stopPythonWorker() {
+  {
+    std::lock_guard<std::mutex> lk(_py_mutex);
+    if (!_py_worker_started) return;
+    _py_stop = true;
+  }
+  _py_cv.notify_all();
+  if (_py_worker.joinable()) _py_worker.join();
+  std::lock_guard<std::mutex> lk(_py_mutex);
+  _py_worker_started = false;
+  _py_has_pending = false;
+}
+
+void PluginDetectYoloCandidates::pythonWorkerMain() {
+  PythonYoloClient client;
+  for (;;) {
+    PythonTask task;
+    {
+      std::unique_lock<std::mutex> lk(_py_mutex);
+      _py_cv.wait(lk, [&] { return _py_stop || _py_has_pending; });
+      if (_py_stop) break;
+      task = std::move(_py_pending_task);
+      _py_has_pending = false;
+    }
+    if (!client.isRunning()) {
+      client.start(task.command, task.script, task.args);
+    }
+    if (!client.isRunning()) {
+      continue;
+    }
+    std::string payload;
+    if (task.use_jpeg) {
+      std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, task.jpeg_quality };
+      std::vector<uchar> buf;
+      cv::imencode(".jpg", task.bgr, buf, params);
+      QByteArray qbytes((const char*)buf.data(), (int)buf.size());
+      QByteArray b64 = qbytes.toBase64();
+      payload.assign(b64.constData(), (size_t)b64.size());
+    } else {
+      QByteArray qbytes((const char*)task.bgr.data, task.bgr.cols * task.bgr.rows * 3);
+      QByteArray b64 = qbytes.toBase64();
+      payload.assign(b64.constData(), (size_t)b64.size());
+    }
+    std::ostringstream oss;
+    oss << "{";
+    oss << "\"width\":" << task.bgr.cols << ",\"height\":" << task.bgr.rows;
+    oss << ",\"format\":\"BGR\",\"jpeg\":" << (task.use_jpeg ? "true" : "false");
+    oss << ",\"conf\":" << task.conf << ",\"iou\":" << task.iou;
+    oss << ",\"model\":\"" << task.model_path << "\"";
+    oss << ",\"image_b64\":\"" << payload << "\"";
+    oss << "}";
+    std::string reply;
+    if (!client.requestLine(oss.str(), reply, task.timeout_ms)) {
+      continue;
+    }
+    std::vector<Yolo::Candidate> parsed;
+    if (!parsePythonReply(reply, parsed)) {
+      continue;
+    }
+    std::lock_guard<std::mutex> lk(_py_mutex);
+    _py_last_raw = std::move(parsed);
+    _py_last_ready = true;
+  }
+  client.stop();
 }
 #endif
