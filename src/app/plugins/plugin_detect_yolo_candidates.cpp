@@ -39,6 +39,8 @@ using namespace VarTypes;
   _settings->addChild(_py_timeout_ms = new VarInt("Python Timeout ms", 200));
   _settings->addChild(_py_use_jpeg = new VarBool("Send JPEG", true));
   _settings->addChild(_py_jpeg_quality = new VarInt("JPEG Quality", 80));
+  _settings->addChild(_py_submit_every_n = new VarInt("Python Submit Every N Frames", 1));
+  _settings->addChild(_py_max_side = new VarInt("Python Max Side (0=off)", 0));
  }
  
  PluginDetectYoloCandidates::~PluginDetectYoloCandidates() {
@@ -67,6 +69,8 @@ using namespace VarTypes;
   delete _py_timeout_ms;
   delete _py_use_jpeg;
   delete _py_jpeg_quality;
+  delete _py_submit_every_n;
+  delete _py_max_side;
  }
  
  ProcessResult PluginDetectYoloCandidates::process(FrameData* data, RenderOptions* options) {
@@ -95,34 +99,61 @@ using namespace VarTypes;
 #ifdef HAVE_OPENCV_DNN
   if (_use_python->getBool()) {
     ensurePythonWorker();
-    cv::Mat bgr;
-    if (!toBGRMat(data->video, bgr)) {
-      return ProcessingFailed;
-    }
-    PythonTask task;
-    task.bgr = bgr.clone();
-    task.command = _py_command->getString();
-    task.script = _py_script->getString();
-    task.args = _py_args->getString();
-    task.model_path = _model_path->getString();
-    task.conf = _conf_th->getDouble();
-    task.iou = _iou_th->getDouble();
-    task.timeout_ms = _py_timeout_ms->getInt();
-    task.use_jpeg = _py_use_jpeg->getBool();
-    task.jpeg_quality = _py_jpeg_quality->getInt();
     std::vector<Yolo::Candidate> raw;
     bool ready = false;
     int dropped = 0;
+    int submit_n = std::max(1, _py_submit_every_n->getInt());
+    bool submit_this_frame = ((_py_frame_index++ % submit_n) == 0);
     {
       std::lock_guard<std::mutex> lk(_py_mutex);
-      if (_py_has_pending) _py_drop_count++;
-      _py_pending_task = std::move(task);
-      _py_has_pending = true;
       raw = _py_last_raw;
       ready = _py_last_ready;
       dropped = _py_drop_count;
     }
-    _py_cv.notify_one();
+    if (submit_this_frame) {
+      cv::Mat bgr;
+      if (!toBGRMat(data->video, bgr)) {
+        return ProcessingFailed;
+      }
+      PythonTask task;
+      task.command = _py_command->getString();
+      task.script = _py_script->getString();
+      task.args = _py_args->getString();
+      task.model_path = _model_path->getString();
+      task.conf = _conf_th->getDouble();
+      task.iou = _iou_th->getDouble();
+      task.timeout_ms = _py_timeout_ms->getInt();
+      task.use_jpeg = _py_use_jpeg->getBool();
+      task.jpeg_quality = _py_jpeg_quality->getInt();
+      task.scale_x = 1.0;
+      task.scale_y = 1.0;
+      int max_side = _py_max_side->getInt();
+      if (max_side > 0) {
+        int max_dim = std::max(bgr.cols, bgr.rows);
+        if (max_dim > max_side) {
+          double s = (double)max_side / (double)max_dim;
+          int nw = std::max(1, (int)std::round((double)bgr.cols * s));
+          int nh = std::max(1, (int)std::round((double)bgr.rows * s));
+          cv::Mat resized;
+          cv::resize(bgr, resized, cv::Size(nw, nh));
+          task.bgr = resized;
+          task.scale_x = (double)bgr.cols / (double)nw;
+          task.scale_y = (double)bgr.rows / (double)nh;
+        } else {
+          task.bgr = bgr;
+        }
+      } else {
+        task.bgr = bgr;
+      }
+      {
+        std::lock_guard<std::mutex> lk(_py_mutex);
+        if (_py_has_pending) _py_drop_count++;
+        _py_pending_task = std::move(task);
+        _py_has_pending = true;
+        dropped = _py_drop_count;
+      }
+      _py_cv.notify_one();
+    }
     std::vector<int> robot_ids, ball_ids, blue_ids, yellow_ids;
     parseClassIdList(_robot_class_ids->getString(), robot_ids);
     parseClassIdList(_ball_class_ids->getString(), ball_ids);
@@ -130,9 +161,9 @@ using namespace VarTypes;
     parseClassIdList(_robot_yellow_class_ids->getString(), yellow_ids);
     fillCandidateSet(raw, cset, robot_ids, ball_ids, blue_ids, yellow_ids);
     if (_debug_print && _debug_print->getBool()) {
-      std::printf("YOLO(Python): balls=%zu blue=%zu yellow=%zu robots=%zu ready=%d dropped=%d\n",
+      std::printf("YOLO(Python): balls=%zu blue=%zu yellow=%zu robots=%zu ready=%d dropped=%d submit=%d/%d\n",
                   cset->balls.size(), cset->robots_blue.size(), cset->robots_yellow.size(), cset->robots.size(),
-                  ready ? 1 : 0, dropped);
+                  ready ? 1 : 0, dropped, submit_this_frame ? 1 : 0, submit_n);
       for (size_t i = 0; i < cset->balls.size(); ++i) {
         const auto &c = cset->balls[i];
         std::printf("python_ball #%zu: [%d,%d,%d,%d] conf=%.3f class=%d\n",
@@ -155,6 +186,7 @@ using namespace VarTypes;
 
 #ifdef HAVE_OPENCV_DNN
   if (_use_dnn->getBool() && !_use_python->getBool()) {
+    stopPythonWorker();
     const std::string modelPath = _model_path->getString();
     if (!_net_loaded || _loaded_model_path != modelPath) {
       try {
@@ -645,6 +677,14 @@ void PluginDetectYoloCandidates::pythonWorkerMain() {
     std::vector<Yolo::Candidate> parsed;
     if (!parsePythonReply(reply, parsed)) {
       continue;
+    }
+    if (task.scale_x != 1.0 || task.scale_y != 1.0) {
+      for (auto& c : parsed) {
+        c.x1 = (int)std::round((double)c.x1 * task.scale_x);
+        c.y1 = (int)std::round((double)c.y1 * task.scale_y);
+        c.x2 = (int)std::round((double)c.x2 * task.scale_x);
+        c.y2 = (int)std::round((double)c.y2 * task.scale_y);
+      }
     }
     std::lock_guard<std::mutex> lk(_py_mutex);
     _py_last_raw = std::move(parsed);

@@ -37,6 +37,8 @@
   VarInt* _py_timeout_ms;
   VarBool* _py_use_jpeg;
   VarInt* _py_jpeg_quality;
+  VarInt* _py_submit_every_n;
+  VarInt* _py_max_side;
 
   cv::dnn::Net _net;
   bool _net_loaded = false;
@@ -59,6 +61,8 @@
     int timeout_ms = 200;
     bool use_jpeg = true;
     int jpeg_quality = 80;
+    double scale_x = 1.0;
+    double scale_y = 1.0;
   };
   std::thread _py_worker;
   std::mutex _py_mutex;
@@ -70,6 +74,7 @@
   std::vector<Yolo::Candidate> _py_last_raw;
   bool _py_last_ready = false;
   int _py_drop_count = 0;
+  int _py_frame_index = 0;
   void ensurePythonWorker();
   void stopPythonWorker();
   void pythonWorkerMain();
